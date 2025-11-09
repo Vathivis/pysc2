@@ -64,6 +64,15 @@ def get_default(a, b):
   return b if a is None else a
 
 
+def _normalize_window_tuple(value, label):
+  """Normalize optional window tuples to `(int, int)` pairs."""
+  if value is None:
+    return None
+  if len(value) != 2:
+    raise ValueError("%s must contain exactly two integers" % label)
+  return (int(value[0]), int(value[1]))
+
+
 class Agent(collections.namedtuple("Agent", ["race", "name"])):
   """Define an Agent. It can have a single race or a list of races."""
 
@@ -114,7 +123,9 @@ class SC2Env(environment.Base):
                random_seed=None,
                disable_fog=False,
                ensure_available_actions=True,
-               version=None):
+               version=None,
+               window_loc=None,
+               window_size=None):
     """Create a SC2 Env.
 
     You must pass a resolution that you want to play at. You can send either
@@ -172,6 +183,8 @@ class SC2Env(environment.Base):
       ensure_available_actions: Whether to throw an exception when an
           unavailable action is passed to step().
       version: The version of SC2 to use, defaults to the latest.
+      window_loc: Optional pair setting the top-left position of the window.
+      window_size: Optional pair setting the width/height of the window.
 
     Raises:
       ValueError: if no map is specified.
@@ -257,6 +270,8 @@ class SC2Env(environment.Base):
     self._interface_options = [
         self._get_interface(interface_format, require_raw=visualize and i == 0)
         for i, interface_format in enumerate(agent_interface_format)]
+    self._window_loc = _normalize_window_tuple(window_loc, "window_loc")
+    self._window_size = _normalize_window_tuple(window_size, "window_size")
 
     self._launch_game()
     self._create_join()
@@ -334,9 +349,15 @@ class SC2Env(environment.Base):
       self._ports = []
 
     # Actually launch the game processes.
+    window_kwargs = {}
+    if self._window_loc is not None:
+      window_kwargs["window_loc"] = self._window_loc
+    if self._window_size is not None:
+      window_kwargs["window_size"] = self._window_size
     self._sc2_procs = [
         self._run_config.start(extra_ports=self._ports,
-                               want_rgb=interface.HasField("render"))
+                               want_rgb=interface.HasField("render"),
+                               **window_kwargs)
         for interface in self._interface_options]
     self._controllers = [p.controller for p in self._sc2_procs]
 
