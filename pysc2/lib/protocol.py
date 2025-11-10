@@ -23,6 +23,7 @@ import time
 
 from absl import flags
 from absl import logging
+from pysc2.lib import flags_helper
 from pysc2.lib import stopwatch
 import websocket
 
@@ -91,12 +92,12 @@ class StarcraftProtocol(object):
   @sw.decorate
   def read(self):
     """Read a Response, do some validation, and return it."""
-    if FLAGS.sc2_verbose_protocol:
+    if flags_helper.flag_value("sc2_verbose_protocol", 0):
       self._log("-------------- [%s] Reading response --------------",
                 self._port)
       start = time.time()
     response = self._read()
-    if FLAGS.sc2_verbose_protocol:
+    if flags_helper.flag_value("sc2_verbose_protocol", 0):
       self._log("-------------- [%s] Read %s in %0.1f msec --------------\n%s",
                 self._port, response.WhichOneof("response"),
                 1000 * (time.time() - start), self._packet_str(response))
@@ -115,7 +116,7 @@ class StarcraftProtocol(object):
   @sw.decorate
   def write(self, request):
     """Write a Request."""
-    if FLAGS.sc2_verbose_protocol:
+    if flags_helper.flag_value("sc2_verbose_protocol", 0):
       self._log("-------------- [%s] Writing request: %s --------------\n%s",
                 self._port, request.WhichOneof("request"),
                 self._packet_str(request))
@@ -154,7 +155,7 @@ class StarcraftProtocol(object):
 
   def _packet_str(self, packet):
     """Return a string form of this packet."""
-    max_lines = FLAGS.sc2_verbose_protocol
+    max_lines = flags_helper.flag_value("sc2_verbose_protocol", 0)
     packet_str = str(packet).strip()
     if max_lines <= 0:
       return packet_str

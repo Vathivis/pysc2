@@ -17,8 +17,6 @@ import os
 import random
 from typing import Callable, MutableSequence, Optional, TypeVar
 
-from absl import flags
-
 _T = TypeVar("_T")
 
 
@@ -45,18 +43,7 @@ def _patch_random_shuffle() -> None:
     random.shuffle = shuffle  # type: ignore[assignment]
 
 
-def _ensure_absl_flags_parsed() -> None:
-  """Call absl's flags parser if the caller has not done so yet."""
-  flags_obj = flags.FLAGS
-  is_parsed = getattr(flags_obj, "is_parsed", None)
-  if callable(is_parsed) and is_parsed():
-    return
-  # The module name is irrelevant; we just need any argv-like iterable.
-  flags_obj([__name__])
-
-
 _patch_random_shuffle()
-_ensure_absl_flags_parsed()
 
 
 def load_tests(loader, standard_tests, unused_pattern):

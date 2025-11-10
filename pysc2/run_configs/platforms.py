@@ -22,6 +22,7 @@ import sys
 from absl import flags
 from absl import logging
 
+from pysc2.lib import flags_helper
 from pysc2.lib import sc_process
 from pysc2.run_configs import lib
 
@@ -52,12 +53,13 @@ class LocalBase(lib.RunConfig):
 
   def __init__(self, base_dir, exec_name, version, cwd=None, env=None):
     base_dir = os.path.expanduser(base_dir)
-    version = version or FLAGS.sc2_version or "latest"
+    selected_version = version or flags_helper.flag_value("sc2_version")
+    version = selected_version or "latest"
     cwd = cwd and os.path.join(base_dir, cwd)
     super(LocalBase, self).__init__(
         replay_dir=os.path.join(base_dir, "Replays"),
         data_dir=base_dir, tmp_dir=None, version=version, cwd=cwd, env=env)
-    if FLAGS.sc2_dev_build:
+    if flags_helper.flag_value("sc2_dev_build"):
       self.version = self.version._replace(build_version=0)
     elif self.version.build_version < lib.VERSIONS["3.16.1"].build_version:
       raise sc_process.SC2LaunchError(

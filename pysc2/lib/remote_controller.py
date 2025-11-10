@@ -21,6 +21,7 @@ import time
 
 from absl import flags
 from absl import logging
+from pysc2.lib import flags_helper
 from pysc2.lib import protocol
 from pysc2.lib import static_data
 from pysc2.lib import stopwatch
@@ -138,7 +139,8 @@ class RemoteController(object):
   """
 
   def __init__(self, host, port, proc=None, timeout_seconds=None):
-    timeout_seconds = timeout_seconds or FLAGS.sc2_timeout
+    if timeout_seconds is None:
+      timeout_seconds = flags_helper.flag_value("sc2_timeout")
     sock = self._connect(host, port, proc, timeout_seconds)
     self._client = protocol.StarcraftProtocol(sock)
     self._last_obs = None
@@ -264,7 +266,7 @@ class RemoteController(object):
     else:
       self._last_obs = obs
 
-    if FLAGS.sc2_log_actions and obs.actions:
+    if flags_helper.flag_value("sc2_log_actions") and obs.actions:
       sys.stderr.write(" Executed actions ".center(60, "<") + "\n")
       for action in obs.actions:
         sys.stderr.write(str(action))
@@ -288,7 +290,7 @@ class RemoteController(object):
   @sw.decorate
   def actions(self, req_action):
     """Send a `sc_pb.RequestAction`, which may include multiple actions."""
-    if FLAGS.sc2_log_actions and req_action.actions:
+    if flags_helper.flag_value("sc2_log_actions") and req_action.actions:
       sys.stderr.write(" Sending actions ".center(60, ">") + "\n")
       for action in req_action.actions:
         sys.stderr.write(str(action))
@@ -306,7 +308,7 @@ class RemoteController(object):
   @sw.decorate
   def observer_actions(self, req_observer_action):
     """Send a `sc_pb.RequestObserverAction`."""
-    if FLAGS.sc2_log_actions and req_observer_action.actions:
+    if flags_helper.flag_value("sc2_log_actions") and req_observer_action.actions:
       sys.stderr.write(" Sending observer actions ".center(60, ">") + "\n")
       for action in req_observer_action.actions:
         sys.stderr.write(str(action))

@@ -17,9 +17,10 @@ from typing import Optional, Sequence, Tuple
 
 from absl import flags
 
+from pysc2.lib import flags_helper
 from pysc2.lib import sc_process
-from pysc2.run_configs import platforms
 from pysc2.run_configs import lib
+from pysc2.run_configs import platforms
 
 flags.DEFINE_string("sc2_run_config", None,
                     "Which run_config to use to spawn the binary.")
@@ -96,13 +97,14 @@ def get(version=None):
   if not configs:
     raise sc_process.SC2LaunchError("No valid run_configs found.")
 
-  if FLAGS.sc2_run_config is None:  # Find the highest priority as default.
+  config_name = flags_helper.flag_value("sc2_run_config")
+  if not config_name:  # Find the highest priority as default.
     config_cls = max(configs.values(), key=lambda c: c.priority())
     return _apply_run_config_overrides(config_cls(version=version))
 
   try:
     return _apply_run_config_overrides(
-        configs[FLAGS.sc2_run_config](version=version))
+        configs[config_name](version=version))
   except KeyError:
     raise sc_process.SC2LaunchError(
         "Invalid run_config. Valid configs are: %s" % (
