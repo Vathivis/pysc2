@@ -54,7 +54,8 @@ class RemoteSC2Env(sc2_env.SC2Env):
                step_mul=None,
                realtime=False,
                replay_dir=None,
-               replay_prefix=None):
+               replay_prefix=None,
+               game_loop_lag_tolerance=sc2_env.DEFAULT_GAME_LOOP_LAG_TOLERANCE):
     """Create a SC2 Env that connects to a remote instance of the game.
 
     This assumes that the game is already up and running, and that it only
@@ -101,6 +102,7 @@ class RemoteSC2Env(sc2_env.SC2Env):
           if they cannot be retrieved and processed quickly enough.
       replay_dir: Directory to save a replay.
       replay_prefix: An optional prefix to use when saving replays.
+      game_loop_lag_tolerance: Allowed slack (in gameloops) before raising.
 
     Raises:
       ValueError: if the race is invalid.
@@ -136,6 +138,8 @@ class RemoteSC2Env(sc2_env.SC2Env):
     self._parallel = run_parallel.RunParallel()  # Needed for multiplayer.
     self._in_game = False
     self._action_delay_fns = [None]
+    self._game_loop_lag_tolerance = sc2_env.normalize_game_loop_lag_tolerance(
+        game_loop_lag_tolerance)
 
     interface = self._get_interface(
         agent_interface_format=agent_interface_format, require_raw=visualize)

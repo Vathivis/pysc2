@@ -94,6 +94,17 @@ _DelayedAction = collections.namedtuple(
 REALTIME_GAME_LOOP_SECONDS = 1 / 22.4
 MAX_STEP_COUNT = 524000  # The game fails above 2^19=524288 steps.
 NUM_ACTION_DELAY_BUCKETS = 10
+DEFAULT_GAME_LOOP_LAG_TOLERANCE = 4
+
+
+def normalize_game_loop_lag_tolerance(value):
+  """Normalize the lag tolerance parameter to a non-negative int."""
+  if value is None:
+    value = DEFAULT_GAME_LOOP_LAG_TOLERANCE
+  tolerance = int(value)
+  if tolerance < 0:
+    raise ValueError("game_loop_lag_tolerance must be >= 0")
+  return tolerance
 
 
 class SC2Env(environment.Base):
@@ -125,7 +136,8 @@ class SC2Env(environment.Base):
                ensure_available_actions=True,
                version=None,
                window_loc=None,
-               window_size=None):
+               window_size=None,
+               game_loop_lag_tolerance=DEFAULT_GAME_LOOP_LAG_TOLERANCE):
     """Create a SC2 Env.
 
     You must pass a resolution that you want to play at. You can send either
@@ -185,6 +197,8 @@ class SC2Env(environment.Base):
       version: The version of SC2 to use, defaults to the latest.
       window_loc: Optional pair setting the top-left position of the window.
       window_size: Optional pair setting the width/height of the window.
+      game_loop_lag_tolerance: Allowed lag (in loops) between the requested and
+          actual observation game loops before an exception is raised.
 
     Raises:
       ValueError: if no map is specified.
@@ -244,6 +258,8 @@ class SC2Env(environment.Base):
     self._default_score_index = score_index
     self._default_score_multiplier = score_multiplier
     self._default_episode_length = game_steps_per_episode
+    self._game_loop_lag_tolerance = normalize_game_loop_lag_tolerance(
+        game_loop_lag_tolerance)
 
     self._run_config = run_configs.get(version=version)
     self._parallel = run_parallel.RunParallel()  # Needed for multiplayer.
@@ -633,6 +649,22 @@ class SC2Env(environment.Base):
         if not self._controllers[0].status_ended:  # May already have ended.
           self._parallel.run((c.step, step_mul) for c in self._controllers)
 
+  def _handle_game_loop_lag(self, game_loop, target_game_loop,
+                            episode_complete):
+    """Raise or warn depending on how far behind the observation is."""
+    if game_loop >= target_game_loop:
+      return
+    lag = target_game_loop - game_loop
+    if 0 < lag <= self._game_loop_lag_tolerance and not episode_complete:
+      logging.warning(
+          "SC2 observation lagged by %d loop(s); expected=%s actual=%s. "
+          "Allowing slack.",
+          lag, target_game_loop, game_loop)
+      return
+    raise ValueError(
+        ("The game didn't advance to the expected game loop. "
+         "Expected: %s, got: %s") % (target_game_loop, game_loop))
+
   def _get_observations(self, target_game_loop):
     # Transform in the thread so it runs while waiting for other observations.
     def parallel_observe(c, f):
@@ -646,12 +678,9 @@ class SC2Env(environment.Base):
           for c, f in zip(self._controllers, self._features)))
 
     game_loop = _get_game_loop(self._agent_obs[0])
-    if (game_loop < target_game_loop and
-        not any(o.player_result for o in self._obs)):
-      raise ValueError(
-          ("The game didn't advance to the expected game loop. "
-           "Expected: %s, got: %s") % (target_game_loop, game_loop))
-    elif game_loop > target_game_loop and target_game_loop > 0:
+    episode_complete = any(o.player_result for o in self._obs)
+    self._handle_game_loop_lag(game_loop, target_game_loop, episode_complete)
+    if game_loop > target_game_loop and target_game_loop > 0:
       logging.warning(
           "Received observation %d step(s) late: %d rather than %d.",
           game_loop - target_game_loop, game_loop, target_game_loop)

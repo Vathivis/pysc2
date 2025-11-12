@@ -49,5 +49,23 @@ class TestNameCroppingAndDeduplication(parameterized.TestCase):
     self.assertEqual(sc2_env.crop_and_deduplicate_names(names), expected_output)
 
 
+class ObservationLagHandlingTest(absltest.TestCase):
+
+  def setUp(self):
+    super().setUp()
+    self.env = sc2_env.SC2Env.__new__(sc2_env.SC2Env)
+    self.env._game_loop_lag_tolerance = 4
+
+  def test_allows_small_positive_lag_before_episode_end(self):
+    # Should not raise for lag within tolerance before the episode completes.
+    self.env._handle_game_loop_lag(
+        game_loop=96, target_game_loop=100, episode_complete=False)
+
+  def test_raises_when_episode_complete(self):
+    with self.assertRaisesRegex(ValueError, "didn't advance"):
+      self.env._handle_game_loop_lag(
+          game_loop=99, target_game_loop=100, episode_complete=True)
+
+
 if __name__ == "__main__":
   absltest.main()
