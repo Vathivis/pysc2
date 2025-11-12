@@ -1,9 +1,9 @@
-> **About this fork**  
-> I made this PySC2 fork so I can run my bot without keeping a local compatibility layer. It keeps the original DeepMind codebase intact while layering small fixes:
-> - Verified on modern CPython releases (3.11–3.13) thanks to packaging metadata updates and the `_patch_random_shuffle()` shim that restores the optional `rand_fn` argument removed upstream in Python 3.11.  
-> - StarCraft II windows can be positioned and resized via `pysc2.run_configs.set_sc2_window_config(...)` / `SC2Env(..., window_loc, window_size)`; the game enforces Blizzard's minimum of 640×480.  
-> - Abseil flag handling no longer runs at import time, so built-in CLIs and any consumer embedding PySC2 can register their own flags without DuplicateFlagError, and user-provided `argv` values (e.g. `--map=Simple64`) are honored.  
-> - Extra StarCraft II binary arguments (like `--norender`) can be injected globally through `pysc2.run_configs.set_sc2_extra_args(...)`, keeping launcher tweaks in one place.
+**About this fork**  
+I made this PySC2 fork so I can run my bot without keeping a local compatibility layer. It keeps the original DeepMind codebase intact while layering small fixes:
+- Verified on modern CPython releases (3.11–3.13) thanks to packaging metadata updates and the `_patch_random_shuffle()` shim that restores the optional `rand_fn` argument removed upstream in Python 3.11.  
+- StarCraft II windows can be positioned and resized via `pysc2.run_configs.set_sc2_window_config(...)` / `SC2Env(..., window_loc, window_size)`; the game enforces Blizzard's minimum of 640×480.  
+- Abseil flag handling no longer runs at import time, so built-in CLIs and any consumer embedding PySC2 can register their own flags without DuplicateFlagError, and user-provided `argv` values (e.g. `--map=Simple64`) are honored.  
+- Extra StarCraft II binary arguments (like `--norender`) can be injected globally through `pysc2.run_configs.set_sc2_extra_args(...)`, keeping launcher tweaks in one place.
 
 
 <div align="center">
