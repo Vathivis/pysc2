@@ -1,0 +1,22 @@
+[project]
+name = "pysc2"
+version = "4.0.1"
+description = "pysc2: StarCraft II Learning Environment"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "absl-py>=2.3.1",
+    "deepdiff>=8.6.1",
+    "dm-env>=1.6",
+    "mock>=5.2.0",
+    "mpyq>=0.2.5",
+    "numpy>=2.3.4",
+    "portpicker>=1.6.0",
+    "protobuf>=3.19,<3.21",
+    "pygame>=2.6.1",
+    "requests>=2.32.5",
+    "s2clientprotocol>=5.0.15.95299.0",
+    "s2protocol>=5.0.15.95299.0",
+    "sk-video>=1.1.10",
+    "websocket-client>=1.9.0",
+]

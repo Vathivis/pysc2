@@ -278,6 +278,8 @@ class RendererHuman(object):
       ("F3", "Select larva (zerg) or warp gates (protoss)"),
       ("F4", "Quit the game"),
       ("F5", "Restart the map"),
+      ("F6", "Toggle debug metrics overlay"),
+      ("F7", "Toggle debug spatial overlays"),
       ("F8", "Save a replay"),
       ("F9", "Toggle RGB rendering"),
       ("F10", "Toggle rendering the player_relative layer."),
@@ -297,6 +299,13 @@ class RendererHuman(object):
       colors.white * 0.8,
       colors.white,
   ]
+
+  debug_color_maps = {
+      "candidates": colors.yellow,
+      "waypoints": colors.cyan,
+      "heatmap": colors.red,
+  }
+  debug_panel_slots = 4
 
   def __init__(self, fps=22.4, step_mul=1, render_sync=False,
                render_feature_grid=True, video=None):
@@ -331,6 +340,13 @@ class RendererHuman(object):
     self._last_game_loop = 0
     self._name_lengths = {}
     self._video_writer = video_writer.VideoWriter(video, fps) if video else None
+    self._debug_payload_lock = threading.Lock()
+    self._debug_payload = None
+    self._debug_metrics_enabled = True
+    self._debug_layers_enabled = True
+    self._active_debug_payload = None
+    self._panel_layers = []
+    self._debug_panel_surfaces = []
 
   def close(self):
     if self._obs_queue:
@@ -341,6 +357,83 @@ class RendererHuman(object):
     if self._video_writer:
       self._video_writer.close()
       self._video_writer = None
+
+  def set_debug_payload(self, payload):
+    """Store a sanitized debug payload supplied by the learner thread.
+
+    Payload schema (all keys optional):
+      {
+        "metrics": {"curriculum_stage": int, "lr": float, ...},
+        "global_vector": [float, ...],  # Printed when F6 is enabled.
+        "spatial_layers": [
+            {
+              "name": "build_candidates",
+              "surface": "screen" | "minimap" | "feature" | "panel",
+              # World-space points are expressed in (x, y) map coordinates.
+              "points": [
+                  {"pos": [x, y], "radius": 1.5, "label": "PF", "color": "red"}
+              ],
+              # Heatmaps are normalized [0, 1] tensors (height x width). They
+              # are projected onto the surface defined by `bounds` and drawn as
+              # mini-panels when surface == "panel".
+              "heatmap": [[float, ...], ...],
+              "bounds": [min_x, min_y, max_x, max_y],
+              "colormap": "candidates" | "waypoints" | "heatmap",
+              "alpha": 0.5
+            },
+            ...
+        ],
+        "notes": "arbitrary short text"
+      }
+    Values must be JSON-serializable scalars or short lists. NumPy arrays are
+    converted to python lists automatically to avoid holding onto mutable
+    buffers owned by the training process.
+    """
+    if payload is None:
+      return
+
+    with self._debug_payload_lock:
+      self._debug_payload = self._sanitize_debug_payload(payload)
+
+  def _sanitize_debug_payload(self, payload):
+    """Recursively copy the payload into renderer-owned python containers."""
+    if isinstance(payload, dict):
+      return {k: self._sanitize_debug_payload(v) for k, v in payload.items()}
+    if isinstance(payload, list):
+      return [self._sanitize_debug_payload(v) for v in payload]
+    if isinstance(payload, tuple):
+      return tuple(self._sanitize_debug_payload(v) for v in payload)
+    if isinstance(payload, np.ndarray):
+      return payload.tolist()
+    if isinstance(payload, np.generic):
+      return payload.item()
+    return payload
+
+  def _get_debug_payload(self):
+    with self._debug_payload_lock:
+      return self._debug_payload
+
+  def clear_debug_payload(self):
+    with self._debug_payload_lock:
+      self._debug_payload = None
+
+  def _current_debug_payload(self):
+    if self._active_debug_payload is not None:
+      return self._active_debug_payload
+    return self._get_debug_payload()
+
+  def _extract_panel_layers(self, payload):
+    if not payload:
+      return []
+    layers = payload.get("spatial_layers")
+    if not isinstance(layers, list):
+      return []
+    result = []
+    for layer in layers:
+      target = (layer.get("surface") or "screen").lower()
+      if target == "panel":
+        result.append(layer)
+    return result
 
   def init(self, game_info, static_data):
     """Take the game info and the static data needed to set up the game.
@@ -455,8 +548,10 @@ class RendererHuman(object):
       """Add a surface. Drawn in order and intersect in reverse order."""
       sub_surf = self._window.subsurface(
           pygame.Rect(surf_loc.tl, surf_loc.size))
-      self._surfaces.append(_Surface(
-          sub_surf, surf_type, surf_loc, world_to_surf, world_to_obs, draw_fn))
+      surface = _Surface(
+          sub_surf, surf_type, surf_loc, world_to_surf, world_to_obs, draw_fn)
+      self._surfaces.append(surface)
+      return surface
 
     self._scale = window_size_px.y // 32
     self._font_small = pygame.font.Font(None, int(self._scale * 0.5))
@@ -641,9 +736,10 @@ class RendererHuman(object):
         feature_pane.blit(text, rect)
         surf_loc = (features_loc + grid_offset + feature_layer_padding +
                     point.Point(0, feature_font_size))
-        add_surface(surf_type,
-                    point.Rect(surf_loc, surf_loc + feature_layer_size).round(),
-                    world_to_surf, world_to_obs, fn)
+        return add_surface(
+            surf_type,
+            point.Rect(surf_loc, surf_loc + feature_layer_size).round(),
+            world_to_surf, world_to_obs, fn)
 
       raw_world_to_obs = transform.Linear()
       raw_world_to_surf = transform.Linear(feature_layer_size / self._map_size)
@@ -686,6 +782,15 @@ class RendererHuman(object):
           add_feature_layer(feature, SurfType.FEATURE | SurfType.SCREEN,
                             world_to_feature_screen_surf,
                             self._world_to_feature_screen_px)
+      self._debug_panel_surfaces = []
+      for i in range(self.debug_panel_slots):
+        panel_surface = add_layer(
+            SurfType.CHROME, None, None,
+            "debug %d" % (i + 1),
+            lambda surf, slot=i: self.draw_debug_panel(surf, slot))
+        self._debug_panel_surfaces.append(panel_surface)
+    else:
+      self._debug_panel_surfaces = []
 
     # Add the help screen
     help_size = point.Point(
@@ -781,6 +886,8 @@ class RendererHuman(object):
           return ActionCmd.QUIT
         elif event.key == pygame.K_F5:
           return ActionCmd.RESTART
+        elif self._handle_debug_shortcut(event.key):
+          continue
         elif event.key == pygame.K_F9:  # Toggle rgb rendering.
           if self._rgb_screen_px and self._feature_screen_px:
             self._render_rgb = not self._render_rgb
@@ -1232,6 +1339,232 @@ class RendererHuman(object):
                   self._obs.observation.player_common.player_id],
               pos, radius)
 
+  def _handle_debug_shortcut(self, key):
+    if key == pygame.K_F6:
+      self._debug_metrics_enabled = not self._debug_metrics_enabled
+      print("Debug metrics overlay:",
+            "on" if self._debug_metrics_enabled else "off")
+      return True
+    if key == pygame.K_F7:
+      self._debug_layers_enabled = not self._debug_layers_enabled
+      print("Debug spatial overlays:",
+            "on" if self._debug_layers_enabled else "off")
+      return True
+    return False
+
+  def _surface_name(self, surf_type):
+    if surf_type & SurfType.MINIMAP:
+      return "minimap"
+    if surf_type & SurfType.FEATURE:
+      return "feature"
+    if surf_type & SurfType.RGB:
+      return "screen"
+    if surf_type & SurfType.SCREEN:
+      return "screen"
+    return "chrome"
+
+  def _parse_world_point(self, value):
+    if isinstance(value, point.Point):
+      return value
+    if isinstance(value, dict) and "x" in value and "y" in value:
+      return point.Point(value["x"], value["y"])
+    if isinstance(value, (list, tuple)) and len(value) >= 2:
+      return point.Point(value[0], value[1])
+    return None
+
+  def _parse_debug_color(self, color_value, colormap_hint=None,
+                         default=None):
+    default = default or self.debug_color_maps.get("candidates", colors.yellow)
+    candidate = color_value or colormap_hint
+    if isinstance(candidate, colors.Color):
+      return candidate
+    if isinstance(candidate, str):
+      name = candidate.lower()
+      if name in self.debug_color_maps:
+        return self.debug_color_maps[name]
+      if hasattr(colors, name):
+        return getattr(colors, name)
+    if isinstance(candidate, (list, tuple)) and len(candidate) == 3:
+      return colors.Color(int(clamp(candidate[0], 0, 255)),
+                          int(clamp(candidate[1], 0, 255)),
+                          int(clamp(candidate[2], 0, 255)))
+    if isinstance(candidate, (int, float)):
+      val = int(clamp(candidate, 0, 255))
+      return colors.Color(val, val, val)
+    return default
+
+  def _scale_debug_color(self, color, factor):
+    factor = clamp(factor, 0.05, 1.0)
+    return colors.Color(
+        int(clamp(color.r * factor, 0, 255)),
+        int(clamp(color.g * factor, 0, 255)),
+        int(clamp(color.b * factor, 0, 255)))
+
+  def _build_debug_region(self, bounds):
+    if bounds and len(bounds) >= 4:
+      tl = point.Point(bounds[0], bounds[1])
+      br = point.Point(bounds[2], bounds[3])
+      return point.Rect(tl, br)
+    return self._playable
+
+  @sw.decorate
+  def draw_debug_layers(self, surf):
+    """Draw user-provided debug overlays on top of spatial surfaces."""
+    if not self._debug_layers_enabled or not surf.world_to_surf:
+      return
+    payload = self._current_debug_payload()
+    if not payload:
+      return
+    spatial_layers = payload.get("spatial_layers")
+    if not spatial_layers:
+      return
+    surf_name = self._surface_name(surf.surf_type)
+    for layer in spatial_layers:
+      target = (layer.get("surface") or "screen").lower()
+      if target == "panel":
+        continue
+      if target == "screen":
+        if surf_name not in ("screen", "rgb"):
+          continue
+      elif target != surf_name:
+        continue
+      colormap_hint = layer.get("colormap") or layer.get("name")
+      color = self._parse_debug_color(layer.get("color"), colormap_hint)
+      alpha = clamp(layer.get("alpha", 0.4), 0.05, 1.0)
+      self._draw_debug_heatmap(
+          surf, layer.get("heatmap"), color, alpha, layer.get("bounds"))
+      self._draw_debug_points(
+          surf, layer.get("points"), color, alpha)
+
+  def _draw_debug_heatmap(self, surf, heatmap, color, alpha, bounds):
+    if not heatmap:
+      return
+    rows = len(heatmap)
+    cols = len(heatmap[0]) if rows else 0
+    if rows == 0 or cols == 0:
+      return
+    region = self._build_debug_region(bounds)
+    width = (region.br.x - region.tl.x) / cols
+    height = (region.br.y - region.tl.y) / rows
+    for r, row in enumerate(heatmap):
+      for c, value in enumerate(row):
+        if not value:
+          continue
+        tl = point.Point(region.tl.x + c * width,
+                         region.tl.y + r * height)
+        br = point.Point(tl.x + width, tl.y + height)
+        surf.draw_rect(
+            self._scale_debug_color(color, alpha * float(value)),
+            point.Rect(tl, br), 0)
+
+  def _draw_debug_points(self, surf, points, color, alpha):
+    if not points:
+      return
+    for marker in points:
+      if isinstance(marker, dict):
+        coords = (marker.get("pos") or marker.get("point") or
+                  marker.get("center"))
+        radius = float(marker.get("radius", 0.5))
+        thickness = int(marker.get("thickness", 0))
+        strength = float(marker.get("strength", 1.0))
+        label = marker.get("label")
+        marker_color = self._parse_debug_color(
+            marker.get("color"), marker.get("colormap"), color)
+      else:
+        coords = marker
+        radius = 0.5
+        thickness = 0
+        strength = 1.0
+        label = None
+        marker_color = color
+      world_point = self._parse_world_point(coords)
+      if not world_point:
+        continue
+      surf.draw_circle(
+          self._scale_debug_color(marker_color, alpha * strength),
+          world_point, radius, thickness)
+      if label:
+        surf.write_world(self._font_small, colors.white, world_point,
+                         str(label))
+
+  def draw_debug_panel(self, surf, panel_index):
+    """Draw a heatmap payload on a dedicated panel surface."""
+    surf.surf.fill(colors.black * 0.2)
+    if panel_index >= len(self._panel_layers):
+      return
+    layer = self._panel_layers[panel_index]
+    heatmap = layer.get("heatmap")
+    if heatmap is None:
+      return
+    heatmap = np.asarray(heatmap, dtype=np.float32)
+    if heatmap.ndim != 2 or not heatmap.size:
+      return
+    heatmap = np.clip(heatmap, 0.0, 1.0)
+    color = self._parse_debug_color(
+        layer.get("color"), layer.get("colormap"),
+        self.debug_color_maps.get("heatmap", colors.red))
+    base = np.array([color.r, color.g, color.b], dtype=np.float32)
+    panel_img = heatmap[:, :, np.newaxis] * base
+    surf.blit_np_array(panel_img)
+    label = layer.get("name") or layer.get("label")
+    if label:
+      surf.write_screen(self._font_small, colors.white * 0.9, (0.1, 0.1),
+                        label[:16])
+
+  def _collect_debug_metric_lines(self):
+    if not self._debug_metrics_enabled:
+      return []
+    payload = self._current_debug_payload()
+    if not payload:
+      return []
+    lines = []
+    metrics = payload.get("metrics")
+    if isinstance(metrics, dict):
+      for key in sorted(metrics):
+        lines.append("%s: %s" % (key, self._format_debug_value(metrics[key])))
+    scalars = payload.get("scalars")
+    if isinstance(scalars, dict):
+      for key in sorted(scalars):
+        lines.append("%s: %s" % (key, self._format_debug_value(scalars[key])))
+    global_vec = payload.get("global_vector")
+    if isinstance(global_vec, (list, tuple)) and global_vec:
+      preview = ", ".join(self._format_debug_value(v)
+                          for v in global_vec[:6])
+      if len(global_vec) > 6:
+        preview += ", ..."
+      lines.append("global[%d]: [%s]" % (len(global_vec), preview))
+    notes = payload.get("notes")
+    if notes:
+      lines.append("notes: %s" % notes)
+    for key, value in sorted(payload.items()):
+      if key in ("metrics", "global_vector", "spatial_layers", "notes",
+                 "scalars"):
+        continue
+      if isinstance(value, (int, float, str)):
+        lines.append("%s: %s" % (key, self._format_debug_value(value)))
+    return lines
+
+  def _format_debug_value(self, value):
+    if isinstance(value, float):
+      if value and (abs(value) < 0.01 or abs(value) > 1000):
+        return "%.3e" % value
+      return "%.3f" % value
+    if isinstance(value, int):
+      return str(value)
+    if isinstance(value, (list, tuple)):
+      preview = ", ".join(self._format_debug_value(v) for v in value[:4])
+      if len(value) > 4:
+        preview += ", ..."
+      return "[%s]" % preview
+    if isinstance(value, dict):
+      items = list(sorted(value.items()))
+      preview = ", ".join("%s=%s" % (k, self._format_debug_value(v))
+                          for k, v in items[:3])
+      if len(items) > 3:
+        preview += ", ..."
+      return "{%s}" % preview
+    return str(value)
+
   @sw.decorate
   def draw_overlay(self, surf):
     """Draw the overlay describing resources."""
@@ -1264,6 +1597,11 @@ class RendererHuman(object):
         line += 1
       else:
         del self._alerts[alert]
+    debug_lines = self._collect_debug_metric_lines()
+    for debug_line in debug_lines:
+      surf.write_screen(self._font_large, colors.white * 0.9, (0.2, line),
+                        debug_line)
+      line += 1
 
   @sw.decorate
   def draw_help(self, surf):
@@ -1610,6 +1948,8 @@ class RendererHuman(object):
       for loc in self._game_info.start_raw.start_locations:
         surf.draw_circle(colors.red, point.Point.build(loc), 5, 1)
 
+    self.draw_debug_layers(surf)
+
     pygame.draw.rect(surf.surf, colors.red, surf.surf.get_rect(), 1)  # Border
 
   def check_valid_queued_action(self):
@@ -1639,6 +1979,7 @@ class RendererHuman(object):
       self.draw_units(surf)
     self.draw_selection(surf)
     self.draw_build_target(surf)
+    self.draw_debug_layers(surf)
     self.draw_overlay(surf)
     self.draw_commands(surf)
     self.draw_panel(surf)
@@ -1651,6 +1992,7 @@ class RendererHuman(object):
       surf.blit_np_array(feature.color(layer))
     else:  # Ignore layers that aren't in this version of SC2.
       surf.surf.fill(colors.black)
+    self.draw_debug_layers(surf)
 
   @sw.decorate
   def draw_raw_layer(self, surf, from_obs, name, color):
@@ -1664,6 +2006,7 @@ class RendererHuman(object):
       surf.blit_np_array(color[layer])
     else:  # Ignore layers that aren't in this version of SC2.
       surf.surf.fill(colors.black)
+    self.draw_debug_layers(surf)
 
   def all_surfs(self, fn, *args, **kwargs):
     for surf in self._surfaces:
@@ -1711,6 +2054,8 @@ class RendererHuman(object):
     """Render a frame given an observation."""
     start_time = time.time()
     self._obs = obs
+    self._active_debug_payload = self._get_debug_payload()
+    self._panel_layers = self._extract_panel_layers(self._active_debug_payload)
     self.check_valid_queued_action()
     self._update_camera(point.Point.build(
         self._obs.observation.raw_data.player.camera))
@@ -1731,6 +2076,8 @@ class RendererHuman(object):
       pygame.display.flip()
 
     self._render_times.append(time.time() - start_time)
+    self._active_debug_payload = None
+    self._panel_layers = []
 
   def run(self, run_config, controller, max_game_steps=0, max_episodes=0,
           game_steps_per_episode=0, save_replay=False):

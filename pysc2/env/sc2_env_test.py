@@ -16,6 +16,8 @@
 
 from absl.testing import absltest
 from absl.testing import parameterized
+from unittest import mock
+import threading
 
 from pysc2.env import sc2_env
 
@@ -65,6 +67,49 @@ class ObservationLagHandlingTest(absltest.TestCase):
     with self.assertRaisesRegex(ValueError, "didn't advance"):
       self.env._handle_game_loop_lag(
           game_loop=99, target_game_loop=100, episode_complete=True)
+
+
+class DebugPayloadHookTest(absltest.TestCase):
+
+  def setUp(self):
+    super().setUp()
+    self.env = sc2_env.SC2Env.__new__(sc2_env.SC2Env)
+    self.env._renderer_human = None
+    self.env._debug_payload_fn = None
+    self.env._debug_payload_lock = threading.Lock()
+    self.env._debug_payload_snapshot = None
+    self.env._debug_payload_generation = 0
+    self.env._debug_payload_thread = None
+    self.env._debug_payload_stop = None
+    self.env._debug_payload_refresh = None
+    self.env._debug_payload_error_logged = False
+    self.env._debug_payload_poll_interval = 0.01
+
+  def test_payload_fn_not_polled_without_renderer(self):
+    payload_fn = mock.Mock(return_value={"lr": 1e-4})
+
+    self.env.set_debug_payload_fn(payload_fn)
+
+    payload_fn.assert_not_called()
+    self.assertIsNone(self.env._debug_payload_thread)
+
+  def test_poll_updates_snapshot(self):
+    payload_fn = mock.Mock(return_value={"entropy": 0.9})
+    self.env._debug_payload_fn = payload_fn
+
+    self.env._poll_debug_payload()
+
+    payload_fn.assert_called_once_with()
+    self.assertEqual(self.env._debug_payload_snapshot, {"entropy": 0.9})
+
+  def test_snapshot_applied_to_renderer(self):
+    renderer = mock.Mock()
+    self.env._renderer_human = renderer
+    self.env._debug_payload_snapshot = {"foo": 1.0}
+
+    self.env._apply_debug_payload_snapshot()
+
+    renderer.set_debug_payload.assert_called_once_with({"foo": 1.0})
 
 
 if __name__ == "__main__":

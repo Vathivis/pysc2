@@ -193,6 +193,10 @@ class StarcraftProcess(object):
 
   def _launch(self, run_config, args, **kwargs):
     """Launch the process and return the process object."""
+    # The run configs may forward helper arguments like `extra_ports` that are
+    # only meaningful at the environment level. Strip those out before calling
+    # subprocess.Popen, which would otherwise raise a TypeError.
+    kwargs.pop("extra_ports", None)
     try:
       with sw("popen"):
         return subprocess.Popen(
