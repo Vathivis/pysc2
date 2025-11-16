@@ -4,6 +4,7 @@ I made this PySC2 fork ([github.com/Vathivis/pysc2](https://github.com/Vathivis/
 - StarCraft II windows can be positioned and resized via `pysc2.run_configs.set_sc2_window_config(...)` / `SC2Env(..., window_loc, window_size)`; the game enforces Blizzard's minimum of 640×480.  
 - Abseil flag handling no longer runs at import time, so built-in CLIs and any consumer embedding PySC2 can register their own flags without DuplicateFlagError, and user-provided `argv` values (e.g. `--map=Simple64`) are honored.  
 - Extra StarCraft II binary arguments (like `--norender`) can be injected globally through `pysc2.run_configs.set_sc2_extra_args(...)`, keeping launcher tweaks in one place.
+- The human renderer exposes an optional PPO/debug overlay when `SC2Env(debug_payload_fn=...)` is set—see [docs/debug_overlay.md](docs/debug_overlay.md) for payload wiring and hotkeys.
 
 
 <div align="center">
@@ -72,7 +73,7 @@ If you manage dependencies with [uv](https://docs.astral.sh/uv/), add the same
 PEP 508 requirement directly to your project:
 
 ```shell
-uv add "pysc2  git+https://github.com/Vathivis/pysc2"
+uv add "pysc2 @ git+https://github.com/Vathivis/pysc2"
 ```
 
 Those commands pull this fork plus the required dependencies. Consider using
