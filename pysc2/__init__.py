@@ -49,6 +49,8 @@ _patch_random_shuffle()
 def load_tests(loader, standard_tests, unused_pattern):
   """Our tests end in `_test.py`, so need to override the test discovery."""
   this_dir = os.path.dirname(__file__)
-  package_tests = loader.discover(start_dir=this_dir, pattern="*_test.py")
+  top_level_dir = os.path.dirname(this_dir)
+  package_tests = loader.discover(
+      start_dir=this_dir, pattern="*_test.py", top_level_dir=top_level_dir)
   standard_tests.addTests(package_tests)
   return standard_tests
