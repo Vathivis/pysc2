@@ -1,9 +1,10 @@
 **About this fork**  
-I made this PySC2 fork so I can run my bot without keeping a local compatibility layer. It keeps the original DeepMind codebase intact while layering small fixes:
+I made this PySC2 fork ([github.com/Vathivis/pysc2](https://github.com/Vathivis/pysc2)) so I can run my bot without keeping a local compatibility layer. It keeps the original DeepMind codebase intact while layering small fixes:
 - Verified on modern CPython releases (3.11–3.13) thanks to packaging metadata updates and the `_patch_random_shuffle()` shim that restores the optional `rand_fn` argument removed upstream in Python 3.11.  
 - StarCraft II windows can be positioned and resized via `pysc2.run_configs.set_sc2_window_config(...)` / `SC2Env(..., window_loc, window_size)`; the game enforces Blizzard's minimum of 640×480.  
 - Abseil flag handling no longer runs at import time, so built-in CLIs and any consumer embedding PySC2 can register their own flags without DuplicateFlagError, and user-provided `argv` values (e.g. `--map=Simple64`) are honored.  
 - Extra StarCraft II binary arguments (like `--norender`) can be injected globally through `pysc2.run_configs.set_sc2_extra_args(...)`, keeping launcher tweaks in one place.
+- The human renderer exposes an optional PPO/debug overlay when `SC2Env(debug_payload_fn=...)` is set—see [docs/debug_overlay.md](docs/debug_overlay.md) for payload wiring and hotkeys.
 
 
 <div align="center">
@@ -29,7 +30,7 @@ I made this PySC2 fork so I can run my bot without keeping a local compatibility
 
 # PySC2 - StarCraft II Learning Environment
 
-[PySC2](https://github.com/deepmind/pysc2) is [DeepMind](http://deepmind.com)'s
+[PySC2](https://github.com/Vathivis/pysc2) is [DeepMind](http://deepmind.com)'s
 Python component of the StarCraft II Learning Environment (SC2LE). It exposes
 [Blizzard Entertainment](http://blizzard.com)'s [StarCraft II Machine Learning
 API](https://github.com/Blizzard/s2client-proto) as a Python RL Environment.
@@ -58,36 +59,46 @@ You can reach us at [pysc2@deepmind.com](mailto:pysc2@deepmind.com).
 
 ## Get PySC2
 
-### PyPI
+### pip / uv (this fork)
 
-The easiest way to get PySC2 is to use pip:
+This fork is **not** published on PyPI, so `pip install pysc2` will still
+download the upstream DeepMind release. Install this repository straight from
+GitHub instead:
 
 ```shell
-$ pip install pysc2
+pip install git+https://github.com/Vathivis/pysc2
 ```
 
-That will install the `pysc2` package along with all the required dependencies.
-[virtualenv](https://pypi.python.org/pypi/virtualenv) can help manage your
-dependencies. You may also need to upgrade pip: `pip install --upgrade pip`
-for the `pysc2` install to work. If you're running on an older system you may
-need to install `libsdl` libraries for the `pygame` dependency.
+If you manage dependencies with [uv](https://docs.astral.sh/uv/), add the same
+PEP 508 requirement directly to your project:
 
-Pip will install a few of the  binaries to your bin directory. `pysc2_play` can
-be used as a shortcut to `python -m pysc2.bin.play`.
+```shell
+uv add "pysc2 @ git+https://github.com/Vathivis/pysc2"
+```
+
+Those commands pull this fork plus the required dependencies. Consider using
+[virtualenv](https://pypi.python.org/pypi/virtualenv) (or uv's environments) to
+keep things isolated. You may also need to upgrade pip:
+`pip install --upgrade pip` for the install to work. If you're running on an
+older system you may need to install `libsdl` libraries for the `pygame`
+dependency.
+
+Pip/uv will install a few binaries to your bin directory. `pysc2_play` can be
+used as a shortcut to `python -m pysc2.bin.play`.
 
 ### From Source
 
 Alternatively you can install latest PySC2 codebase from git master branch:
 
 ```shell
-$ pip install --upgrade https://github.com/deepmind/pysc2/archive/master.zip
+pip install --upgrade https://github.com/Vathivis/pysc2/archive/master.zip
 ```
 
 or from a local clone of the git repo:
 
 ```shell
-$ git clone https://github.com/deepmind/pysc2.git
-$ pip install --upgrade pysc2/
+git clone https://github.com/Vathivis/pysc2.git
+pip install --upgrade pysc2/
 ```
 
 ## Get StarCraft II

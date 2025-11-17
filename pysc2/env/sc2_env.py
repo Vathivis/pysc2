@@ -17,7 +17,10 @@
 import collections
 import copy
 import random
+import threading
 import time
+
+import numpy as np
 
 from absl import logging
 from pysc2 import maps
@@ -123,6 +126,7 @@ class SC2Env(environment.Base):
                discount=1.,
                discount_zero_after_timeout=False,
                visualize=False,
+               debug_payload_fn=None,
                step_mul=None,
                realtime=False,
                save_replay_episodes=0,
@@ -170,6 +174,11 @@ class SC2Env(environment.Base):
           after the `game_steps_per_episode` timeout.
       visualize: Whether to pop up a window showing the camera and feature
           layers. This won't work without access to a window manager.
+      debug_payload_fn: Optional callable returning a JSON-serializable dict
+          describing debug overlays to draw inside the human renderer. When set,
+          the env spins up a background poller (only when `visualize=True`) that
+          invokes this callable roughly every 100ms and caches the latest result
+          for the render thread.
       step_mul: How many game steps per agent step (action/observation). None
           means use the map default.
       realtime: Whether to use realtime mode. In this mode the game simulation
@@ -260,6 +269,15 @@ class SC2Env(environment.Base):
     self._default_episode_length = game_steps_per_episode
     self._game_loop_lag_tolerance = normalize_game_loop_lag_tolerance(
         game_loop_lag_tolerance)
+    self._debug_payload_fn = debug_payload_fn
+    self._debug_payload_lock = threading.Lock()
+    self._debug_payload_snapshot = None
+    self._debug_payload_generation = 0
+    self._debug_payload_thread = None
+    self._debug_payload_stop = None
+    self._debug_payload_refresh = None
+    self._debug_payload_error_logged = False
+    self._debug_payload_poll_interval = 0.1
 
     self._run_config = run_configs.get(version=version)
     self._parallel = run_parallel.RunParallel()  # Needed for multiplayer.
@@ -305,6 +323,7 @@ class SC2Env(environment.Base):
           self._controllers[0].data())
     else:
       self._renderer_human = None
+    self._maybe_start_debug_payload_thread()
 
     self._metrics = metrics.Metrics(self._map_name)
     self._metrics.increment_instance()
@@ -317,6 +336,111 @@ class SC2Env(environment.Base):
     self._agent_obs = [None] * self._num_agents
     self._state = environment.StepType.LAST  # Want to jump to `reset`.
     logging.info("Environment is ready")
+
+  def set_debug_payload_fn(self, debug_payload_fn):
+    """Set or replace the callable supplying renderer debug overlays."""
+    self._debug_payload_fn = debug_payload_fn
+    if debug_payload_fn:
+      self._maybe_start_debug_payload_thread()
+    else:
+      self._stop_debug_payload_thread()
+
+  def _maybe_start_debug_payload_thread(self):
+    if (self._debug_payload_thread or
+        not self._debug_payload_fn or
+        not getattr(self, "_renderer_human", None)):
+      return
+    self._start_debug_payload_thread()
+
+  def _start_debug_payload_thread(self):
+    self._debug_payload_stop = threading.Event()
+    self._debug_payload_refresh = threading.Event()
+    self._debug_payload_thread = threading.Thread(
+        target=self._debug_payload_worker,
+        name="SC2EnvDebugPayload",
+        daemon=True)
+    self._debug_payload_thread.start()
+    self._request_debug_payload_refresh()
+
+  def _stop_debug_payload_thread(self):
+    thread = self._debug_payload_thread
+    if thread:
+      self._debug_payload_stop.set()
+      self._debug_payload_refresh.set()
+      thread.join()
+      self._debug_payload_thread = None
+      self._debug_payload_stop = None
+      self._debug_payload_refresh = None
+    self._debug_payload_error_logged = False
+    with self._debug_payload_lock:
+      self._debug_payload_snapshot = None
+      self._debug_payload_generation += 1
+    if getattr(self, "_renderer_human", None):
+      self._renderer_human.clear_debug_payload()
+
+  def _debug_payload_worker(self):
+    while not self._debug_payload_stop.is_set():
+      self._debug_payload_refresh.wait(self._debug_payload_poll_interval)
+      self._debug_payload_refresh.clear()
+      self._poll_debug_payload()
+
+  def _poll_debug_payload(self):
+    if not self._debug_payload_fn:
+      return
+    try:
+      payload = self._debug_payload_fn()
+    except Exception:  # pylint: disable=broad-except
+      if not self._debug_payload_error_logged:
+        logging.exception("Failed to fetch renderer debug payload.")
+        self._debug_payload_error_logged = True
+      return
+    self._debug_payload_error_logged = False
+    if payload is None:
+      return
+    payload = self._sanitize_debug_payload(payload)
+    if payload is None:
+      return
+    with self._debug_payload_lock:
+      self._debug_payload_snapshot = payload
+      self._debug_payload_generation += 1
+
+  def _sanitize_debug_payload(self, payload):
+    """Recursively copy payload contents into renderer-safe containers."""
+    if isinstance(payload, dict):
+      return {k: self._sanitize_debug_payload(v) for k, v in payload.items()}
+    if isinstance(payload, list):
+      return [self._sanitize_debug_payload(v) for v in payload]
+    if isinstance(payload, tuple):
+      return tuple(self._sanitize_debug_payload(v) for v in payload)
+    if isinstance(payload, np.ndarray):
+      return payload.tolist()
+    if isinstance(payload, np.generic):
+      return payload.item()
+    return payload
+
+  def _request_debug_payload_refresh(self, wait=False):
+    if not self._debug_payload_thread:
+      return
+    previous_generation = self._debug_payload_generation
+    self._debug_payload_refresh.set()
+    if wait:
+      deadline = time.time() + self._debug_payload_poll_interval
+      while time.time() < deadline:
+        if self._debug_payload_generation != previous_generation:
+          break
+        time.sleep(0.01)
+
+  def _get_debug_payload_snapshot(self):
+    with self._debug_payload_lock:
+      return self._debug_payload_snapshot
+
+  def _apply_debug_payload_snapshot(self):
+    renderer = getattr(self, "_renderer_human", None)
+    if not renderer:
+      return
+    snapshot = self._get_debug_payload_snapshot()
+    if snapshot is not None:
+      renderer.set_debug_payload(snapshot)
 
   @staticmethod
   def _get_interface(interface_format, require_raw):
@@ -538,6 +662,7 @@ class SC2Env(environment.Base):
       self._last_obs_game_loop = None
       self._action_delays = [[0] * NUM_ACTION_DELAY_BUCKETS] * self._num_agents
 
+    self._request_debug_payload_refresh(wait=True)
     return self._observe(target_game_loop=0)
 
   @sw.decorate("step_env")
@@ -570,6 +695,14 @@ class SC2Env(environment.Base):
 
     self._state = environment.StepType.MID
     return self._step(step_mul)
+
+  def render(self):
+    """Manually trigger a render outside the step loop."""
+    if (not getattr(self, "_renderer_human", None) or
+        not self._obs or not self._obs[0]):
+      return
+    self._apply_debug_payload_snapshot()
+    self._renderer_human.render(self._obs[0])
 
   def _step(self, step_mul=None):
     step_mul = step_mul or self._step_mul
@@ -733,6 +866,7 @@ class SC2Env(environment.Base):
       reward = outcome
 
     if self._renderer_human:
+      self._apply_debug_payload_snapshot()
       self._renderer_human.render(self._obs[0])
       cmd = self._renderer_human.get_actions(
           self._run_config, self._controllers[0])
@@ -788,6 +922,7 @@ class SC2Env(environment.Base):
 
   def close(self):
     logging.info("Environment Close")
+    self._stop_debug_payload_thread()
     if hasattr(self, "_metrics") and self._metrics:
       self._metrics.close()
       self._metrics = None
